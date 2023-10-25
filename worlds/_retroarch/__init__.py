@@ -30,7 +30,7 @@ class RetroArchContext:
     def __init__(self) -> None:
         self.socket = None
         self.connection_status = ConnectionStatus.NOT_CONNECTED
-        self.info = None
+        self.info = dict()
 
     def close(self) -> None:
         self.connection_status = ConnectionStatus.NOT_CONNECTED
@@ -57,12 +57,13 @@ class SyncError(Exception):
     pass
 
 
-def connect(ctx: RetroArchContext) -> bool:
+async def connect(ctx: RetroArchContext) -> bool:
     """Attempts to establish a connection with RetroArch server. Returns True if successful."""
     try:
         ctx.socket = RetroArchSocket()
         ctx.connection_status = ConnectionStatus.TENTATIVE
-        return True
+        if await get_retroarch_version(ctx) is not None:
+            return True
     except (TimeoutError, ConnectionRefusedError):
         ctx.socket = None
         ctx.connection_status = ConnectionStatus.NOT_CONNECTED
@@ -80,7 +81,7 @@ async def send_request(ctx: RetroArchContext, request: str) -> str:
     """Sends a request to the RetroArch and returns the response.
 
     It's likely you want to use the wrapper functions instead of this."""
-    response = await send_requests(ctx, request)[0]
+    response = (await send_requests(ctx, [request]))[0]
     return response
 
 async def send_requests(ctx: RetroArchContext, req_list: typing.List[str]) -> typing.List[str]:
@@ -124,67 +125,67 @@ async def get_status(ctx: RetroArchContext) -> str:
     """Gets the status of RetroArch"""
     response = await send_request(ctx, Commands.GET_STATUS)
 
-    (command, status, info) = response.split(b" ", 2)
+    (command, status, info) = response.split(" ", 2)
     if command != Commands.GET_STATUS:
         raise SyncError(f"Expected response of type {Commands.GET_STATUS} but got {command}")
     
-    (core_type, rom_name, game_crc) = info.split(b",", 2)
-    ctx.info[core_type] = core_type
-    ctx.info[rom_name] = rom_name
-    ctx.info[game_crc] = game_crc
+    (core_type, rom_name, game_crc) = info.split(",", 2)
+    ctx.info["core_type"] = core_type
+    ctx.info["rom_name"] = rom_name
+    ctx.info["game_crc"] = game_crc
     
     return status
 
 
 async def get_core_type(ctx: RetroArchContext) -> str:
     """Gets the core type for the currently loaded CORE"""
-    if ctx.info is None:
+    if ctx.info["core_type"] is None:
         response = await send_request(ctx, Commands.GET_STATUS)
 
-        (command, status, info) = response.split(b" ", 2)
+        (command, status, info) = response.split(" ", 2)
         if command != Commands.GET_STATUS:
             raise SyncError(f"Expected response of type {Commands.GET_STATUS} but got {command}")
         
-        (core_type, rom_name, game_crc) = info.split(b",", 2)
-        ctx.info[core_type] = core_type
-        ctx.info[rom_name] = rom_name
-        ctx.info[game_crc] = game_crc
+        (core_type, rom_name, game_crc) = info.split(",", 2)
+        ctx.info["core_type"] = core_type
+        ctx.info["rom_name"] = rom_name
+        ctx.info["game_crc"] = game_crc
 
-    return ctx.info[core_type]
+    return ctx.info["core_type"]
 
 
 async def get_rom_name(ctx: RetroArchContext) -> str:
     """Gets the rom name for the currently loaded ROM"""
-    if ctx.info is None:
+    if ctx.info["rom_name"] is None:
         response = await send_request(ctx, Commands.GET_STATUS)
 
-        (command, status, info) = response.split(b" ", 2)
+        (command, status, info) = response.split(" ", 2)
         if command != Commands.GET_STATUS:
             raise SyncError(f"Expected response of type {Commands.GET_STATUS} but got {command}")
         
-        (core_type, rom_name, game_crc) = info.split(b",", 2)
-        ctx.info[core_type] = core_type
-        ctx.info[rom_name] = rom_name
-        ctx.info[game_crc] = game_crc
+        (core_type, rom_name, game_crc) = info.split(",", 2)
+        ctx.info["core_type"] = core_type
+        ctx.info["rom_name"] = rom_name
+        ctx.info["game_crc"] = game_crc
 
-    return ctx.info[rom_name]
+    return ctx.info["rom_name"]
 
 
 async def get_game_crc(ctx: RetroArchContext) -> str:
     """Gets the rom name for the currently loaded ROM"""
-    if ctx.info is None:
+    if ctx.info["game_crc"] is None:
         response = await send_requests(ctx, Commands.GET_STATUS)
 
-        (command, status, info) = response.split(b" ", 2)
+        (command, status, info) = response.split(" ", 2)
         if command != Commands.GET_STATUS:
             raise SyncError(f"Expected response of type {Commands.GET_STATUS} but got {command}")
         
-        (core_type, rom_name, game_crc) = info.split(b",", 2)
-        ctx.info[core_type] = core_type
-        ctx.info[rom_name] = rom_name
-        ctx.info[game_crc] = game_crc
+        (core_type, rom_name, game_crc) = info.split(",", 2)
+        ctx.info["core_type"] = core_type
+        ctx.info["rom_name"] = rom_name
+        ctx.info["game_crc"] = game_crc
 
-    return ctx.info[game_crc]
+    return ctx.info["game_crc"]
 
 async def lock(ctx: RetroArchContext) -> None:
     """Locks RetroArch in anticipation of receiving more requests this frame.
@@ -230,30 +231,34 @@ async def guarded_read(ctx: RetroArchContext, read_list: typing.List[typing.Tupl
 
     Returns None if any item in guard_list failed to validate. Otherwise returns a list of bytes in the order they
     were requested."""
-    responses = [guard_response.split(b" ", 2) for guard_response in await send_requests(ctx, [Commands.READ_CORE_MEMORY + " " + hex(address) + " " + len(expected_data) 
+    responses = [guard_response.split(" ", 2) for guard_response in await send_requests(ctx, [Commands.READ_CORE_MEMORY + " " + str(hex(address)) + " " + str(len(expected_data)) 
                                    for (address, expected_data) in guard_list])]
     for (address, expected_data) in guard_list:
         for (r_command, r_address, r_data) in responses:
-            if r_command == Commands.READ_CORE_MEMORY and int(r_address) == address and bytearray.fromhex(r_data) == expected_data:
+            if r_command == Commands.READ_CORE_MEMORY and ("0x"+r_address) == str(hex(address)) and bytearray.fromhex(r_data) == expected_data:
                 break
             else:
                 return None
 
     result: typing.List[bytes] = []
-    responses = [read_response.split(b" ", 2) for read_response in await send_requests(ctx, [Commands.READ_CORE_MEMORY + " " + hex(address) + " " + length 
+    responses = [read_response.split(" ", 2) for read_response in await send_requests(ctx, [Commands.READ_CORE_MEMORY + " " + str(hex(address)) + " " + str(length) 
                                    for (address, length) in read_list])]
     for (address, length) in read_list:
+        print(str(hex(address)) + " " + str(length))
+    print(str(responses))
+    for (address, length) in read_list:
         for (r_command, r_address, r_data) in responses:
-            if r_command == Commands.READ_CORE_MEMORY and int(r_address) == address and len(bytearray.fromhex(r_data)) == length:
+            if r_command == Commands.READ_CORE_MEMORY and ("0x"+r_address) == str(hex(address)) and len(bytearray.fromhex(r_data)) == length:
+                print(str(r_data))
                 result.append(bytearray.fromhex(r_data))
                 break
             else:
-                raise SyncError(f"Expected response of type {Commands.READ_CORE_MEMORY} for address {address}")
+                raise SyncError(f"Expected response of type {Commands.READ_CORE_MEMORY} for address {str(hex(address))}")
 
     return result
 
 
-async def read(ctx: RetroArchContext, read_list: typing.List[typing.Tuple[hex, int]]) -> typing.List[bytes]:
+async def read(ctx: RetroArchContext, read_list: typing.List[typing.Tuple[int, int]]) -> typing.List[bytes]:
     """Reads data at 1 or more addresses.
 
     Items in `read_list` should be organized `(address, size, domain)` where
@@ -280,20 +285,20 @@ async def guarded_write(ctx: RetroArchContext, write_list: typing.List[typing.Tu
     - `expected_data` is the bytes that the data starting at this address is expected to match
 
     Returns False if any item in guard_list failed to validate. Otherwise returns True."""
-    responses = [guard_response.split(b" ", 2) for guard_response in await send_requests(ctx, [Commands.READ_CORE_MEMORY + " " + hex(address) + " " + len(expected_data) 
+    responses = [guard_response.split(" ", 2) for guard_response in await send_requests(ctx, [Commands.READ_CORE_MEMORY + " " + str(hex(address)) + " " + str(len(expected_data)) 
                                    for (address, expected_data) in guard_list])]
     for (address, expected_data) in guard_list:
         for (r_command, r_address, r_data) in responses:
-            if r_command == Commands.READ_CORE_MEMORY and int(r_address) == address and bytearray.fromhex(r_data) == expected_data:
+            if r_command == Commands.READ_CORE_MEMORY and ("0x"+r_address) == str(hex(address)) and bytearray.fromhex(r_data) == expected_data:
                 break
             else:
                 return False
 
-    responses = [read_response.split(b" ", 2) for read_response in await send_requests(ctx, [Commands.WRITE_CORE_MEMORY + " " + hex(address) + " " + values 
+    responses = [read_response.split(" ", 2) for read_response in await send_requests(ctx, [Commands.WRITE_CORE_MEMORY + " " + str(hex(address)) + " " + str(values) 
                                    for (address, values) in write_list])]
     for (address, values) in write_list:
         for (r_command, r_address, r_data) in responses:
-            if r_command == Commands.WRITE_CORE_MEMORY and int(r_address) == address and int(r_data) == len(values):
+            if r_command == Commands.WRITE_CORE_MEMORY and ("0x"+r_address) == str(hex(address)) and int(r_data) == len(values):
                 break
             else:
                 raise SyncError(f"Expected response of type {Commands.WRITE_CORE_MEMORY} for address {address}")

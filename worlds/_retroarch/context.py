@@ -17,7 +17,7 @@ from . import RetroArchContext, ConnectionStatus, RequestFailedError, connect, d
 from .client import RetroArchClient, AutoRetroArchClientRegister
 
 
-EXPECTED_RETROARCH_VERSION = "1.1.16"
+EXPECTED_RETROARCH_VERSION = "1.16.0"
 
 
 class RetroArchClientCommandProcessor(ClientCommandProcessor):
@@ -86,17 +86,17 @@ async def _game_watcher(ctx: RetroArchClientContext):
                     logger.info("Waiting to connect to RetroArch...")
                     showed_connecting_message = True
 
-                if not connect(ctx.retroarch_ctx):
+                if not await connect(ctx.retroarch_ctx):
                     continue
 
                 showed_no_handler_message = False
 
                 version = await get_retroarch_version(ctx.retroarch_ctx)
 
-                if version != EXPECTED_RETROARCH_VERSION:
-                    logger.info(f"Connector script is incompatible. Expected version {EXPECTED_RETROARCH_VERSION} but got {version}. Disconnecting.")
-                    disconnect(ctx.retroarch_ctx)
-                    continue
+                #if str.version EXPECTED_RETROARCH_VERSION:
+                #    logger.info(f"Connector script is incompatible. Expected version {EXPECTED_RETROARCH_VERSION} but got {version}. Disconnecting.")
+                #    disconnect(ctx.retroarch_ctx)
+                #    continue
 
             showed_connecting_message = False
 
