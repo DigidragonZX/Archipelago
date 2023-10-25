@@ -1,16 +1,16 @@
 from typing import TYPE_CHECKING, Optional, Dict, Set
 
 from NetUtils import ClientStatus
-import worlds._bizhawk as bizhawk
-from worlds._bizhawk.client import BizHawkClient
+import worlds._retroarch as retroarch
+from worlds._retroarch.client import RetroArchClient
 
 from .data import BASE_OFFSET, data
 from .options import Goal
 
 if TYPE_CHECKING:
-    from worlds._bizhawk.context import BizHawkClientContext
+    from worlds._retroarch.context import RetroArchClientContext
 else:
-    BizHawkClientContext = object
+    RetroArchClientContext = object
 
 
 EXPECTED_ROM_NAME = "pokemon emerald version / AP 2"
@@ -81,9 +81,9 @@ KEY_LOCATION_FLAGS = [
 KEY_LOCATION_FLAG_MAP = {data.locations[location_name].flag: location_name for location_name in KEY_LOCATION_FLAGS}
 
 
-class PokemonEmeraldClient(BizHawkClient):
+class PokemonEmeraldClient(RetroArchClient):
     game = "Pokemon Emerald"
-    system = "GBA"
+    system = "game_boy_advance"
     local_checked_locations: Set[int]
     local_set_events: Dict[str, bool]
     local_found_key_items: Dict[str, bool]
@@ -96,13 +96,14 @@ class PokemonEmeraldClient(BizHawkClient):
         self.local_found_key_items = {}
         self.goal_flag = IS_CHAMPION_FLAG
 
-    async def validate_rom(self, ctx: BizHawkClientContext) -> bool:
+    async def validate_rom(self, ctx: RetroArchClientContext) -> bool:
         from CommonClient import logger
 
         try:
             # Check ROM name/patch version
-            rom_name_bytes = ((await bizhawk.read(ctx.bizhawk_ctx, [(0x108, 32, "ROM")]))[0])
+            rom_name_bytes = ((await retroarch.read(ctx.retroarch_ctx, [(0x108 + 0x08000000, 32)]))[0])
             rom_name = bytes([byte for byte in rom_name_bytes if byte != 0]).decode("ascii")
+            print(str(rom_name))
             if not rom_name.startswith("pokemon emerald version"):
                 return False
             if rom_name == "pokemon emerald version":
@@ -116,7 +117,7 @@ class PokemonEmeraldClient(BizHawkClient):
                 return False
         except UnicodeDecodeError:
             return False
-        except bizhawk.RequestFailedError:
+        except retroarch.RequestFailedError:
             return False  # Should verify on the next pass
 
         ctx.game = self.game
@@ -126,11 +127,11 @@ class PokemonEmeraldClient(BizHawkClient):
 
         return True
 
-    async def set_auth(self, ctx: BizHawkClientContext) -> None:
-        slot_name_bytes = (await bizhawk.read(ctx.bizhawk_ctx, [(data.rom_addresses["gArchipelagoInfo"], 64, "ROM")]))[0]
-        ctx.auth = bytes([byte for byte in slot_name_bytes if byte != 0]).decode("utf-8")
+    async def set_auth(self, ctx: RetroArchClientContext) -> None:
+        slot_name_bytes = (await retroarch.read(ctx.retroarch_ctx, [(data.rom_addresses["gArchipelagoInfo"] + 0x08000000, 64)]))[0]
+        ctx.auth = bytes([byte for byte in slot_name_bytes if byte != 0])
 
-    async def game_watcher(self, ctx: BizHawkClientContext) -> None:
+    async def game_watcher(self, ctx: RetroArchClientContext) -> None:
         if ctx.slot_data is not None:
             if ctx.slot_data["goal"] == Goal.option_champion:
                 self.goal_flag = IS_CHAMPION_FLAG
@@ -141,28 +142,30 @@ class PokemonEmeraldClient(BizHawkClient):
 
         try:
             # Checks that the player is in the overworld
-            overworld_guard = (data.ram_addresses["gMain"] + 4, (data.ram_addresses["CB2_Overworld"] + 1).to_bytes(4, "little"), "System Bus")
+            overworld_guard = (data.ram_addresses["gMain"] + 4, (data.ram_addresses["CB2_Overworld"] + 1).to_bytes(4, "little"))
 
             # Read save block address
-            read_result = await bizhawk.guarded_read(
-                ctx.bizhawk_ctx,
-                [(data.ram_addresses["gSaveBlock1Ptr"], 4, "System Bus")],
+            read_result = await retroarch.guarded_read(
+                ctx.retroarch_ctx,
+                [(data.ram_addresses["gSaveBlock1Ptr"], 4)],
                 [overworld_guard]
             )
             if read_result is None:  # Not in overworld
+                print("not in overworld")
                 return
 
+            print("in overworld")
             # Checks that the save block hasn't moved
-            save_block_address_guard = (data.ram_addresses["gSaveBlock1Ptr"], read_result[0], "System Bus")
+            save_block_address_guard = (data.ram_addresses["gSaveBlock1Ptr"], read_result[0])
 
             save_block_address = int.from_bytes(read_result[0], "little")
 
             # Handle giving the player items
-            read_result = await bizhawk.guarded_read(
-                ctx.bizhawk_ctx,
+            read_result = await retroarch.guarded_read(
+                ctx.retroarch_ctx,
                 [
-                    (save_block_address + 0x3778, 2, "System Bus"),                        # Number of received items
-                    (data.ram_addresses["gArchipelagoReceivedItem"] + 4, 1, "System Bus")  # Received item struct full?
+                    (save_block_address + 0x3778, 2),                        # Number of received items
+                    (data.ram_addresses["gArchipelagoReceivedItem"] + 4, 1)  # Received item struct full?
                 ],
                 [overworld_guard, save_block_address_guard]
             )
@@ -176,17 +179,17 @@ class PokemonEmeraldClient(BizHawkClient):
             # fill it with the next item
             if num_received_items < len(ctx.items_received) and received_item_is_empty:
                 next_item = ctx.items_received[num_received_items]
-                await bizhawk.write(ctx.bizhawk_ctx, [
-                    (data.ram_addresses["gArchipelagoReceivedItem"] + 0, (next_item.item - BASE_OFFSET).to_bytes(2, "little"), "System Bus"),
-                    (data.ram_addresses["gArchipelagoReceivedItem"] + 2, (num_received_items + 1).to_bytes(2, "little"), "System Bus"),
-                    (data.ram_addresses["gArchipelagoReceivedItem"] + 4, [1], "System Bus"),  # Mark struct full
-                    (data.ram_addresses["gArchipelagoReceivedItem"] + 5, [next_item.flags & 1], "System Bus"),
+                await retroarch.write(ctx.retroarch_ctx, [
+                    (data.ram_addresses["gArchipelagoReceivedItem"] + 0, (next_item.item - BASE_OFFSET).to_bytes(2, "little")),
+                    (data.ram_addresses["gArchipelagoReceivedItem"] + 2, (num_received_items + 1).to_bytes(2, "little")),
+                    (data.ram_addresses["gArchipelagoReceivedItem"] + 4, [1]),  # Mark struct full
+                    (data.ram_addresses["gArchipelagoReceivedItem"] + 5, [next_item.flags & 1]),
                 ])
 
             # Read flags in 2 chunks
-            read_result = await bizhawk.guarded_read(
-                ctx.bizhawk_ctx,
-                [(save_block_address + 0x1450, 0x96, "System Bus")],  # Flags
+            read_result = await retroarch.guarded_read(
+                ctx.retroarch_ctx,
+                [(save_block_address + 0x1450, 0x96)],  # Flags
                 [overworld_guard, save_block_address_guard]
             )
             if read_result is None:  # Not in overworld, or save block moved
@@ -194,9 +197,9 @@ class PokemonEmeraldClient(BizHawkClient):
 
             flag_bytes = read_result[0]
 
-            read_result = await bizhawk.guarded_read(
-                ctx.bizhawk_ctx,
-                [(save_block_address + 0x14E6, 0x96, "System Bus")],  # Flags
+            read_result = await retroarch.guarded_read(
+                ctx.retroarch_ctx,
+                [(save_block_address + 0x14E6, 0x96)],  # Flags
                 [overworld_guard, save_block_address_guard]
             )
             if read_result is not None:
@@ -273,6 +276,6 @@ class PokemonEmeraldClient(BizHawkClient):
                     "operations": [{"operation": "replace", "value": key_bitfield}]
                 }])
                 self.local_found_key_items = local_found_key_items
-        except bizhawk.RequestFailedError:
+        except retroarch.RequestFailedError:
             # Exit handler and return to main loop to reconnect
             pass
