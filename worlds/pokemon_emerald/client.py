@@ -103,7 +103,6 @@ class PokemonEmeraldClient(RetroArchClient):
             # Check ROM name/patch version
             rom_name_bytes = ((await retroarch.read(ctx.retroarch_ctx, [(0x108 + 0x08000000, 32)]))[0])
             rom_name = bytes([byte for byte in rom_name_bytes if byte != 0]).decode("ascii")
-            print(str(rom_name))
             if not rom_name.startswith("pokemon emerald version"):
                 return False
             if rom_name == "pokemon emerald version":
@@ -151,10 +150,8 @@ class PokemonEmeraldClient(RetroArchClient):
                 [overworld_guard]
             )
             if read_result is None:  # Not in overworld
-                print("not in overworld")
                 return
 
-            print("in overworld")
             # Checks that the save block hasn't moved
             save_block_address_guard = (data.ram_addresses["gSaveBlock1Ptr"], read_result[0])
 

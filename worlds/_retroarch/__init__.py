@@ -244,12 +244,8 @@ async def guarded_read(ctx: RetroArchContext, read_list: typing.List[typing.Tupl
     responses = [read_response.split(" ", 2) for read_response in await send_requests(ctx, [Commands.READ_CORE_MEMORY + " " + str(hex(address)) + " " + str(length) 
                                    for (address, length) in read_list])]
     for (address, length) in read_list:
-        print(str(hex(address)) + " " + str(length))
-    print(str(responses))
-    for (address, length) in read_list:
         for (r_command, r_address, r_data) in responses:
             if r_command == Commands.READ_CORE_MEMORY and ("0x"+r_address) == str(hex(address)) and len(bytearray.fromhex(r_data)) == length:
-                print(str(r_data))
                 result.append(bytearray.fromhex(r_data))
                 break
             else:
