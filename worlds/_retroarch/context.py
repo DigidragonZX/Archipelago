@@ -5,6 +5,7 @@ checking or launching the client, otherwise it will probably cause circular impo
 
 
 import asyncio
+import enum
 import traceback
 from typing import Any, Dict, Optional
 
@@ -12,12 +13,19 @@ from CommonClient import CommonContext, ClientCommandProcessor, get_base_parser,
 import Patch
 import Utils
 
-from . import RetroArchContext, ConnectionStatus, RequestFailedError, connect, disconnect, get_status, get_retroarch_version, \
+from . import RetroArchContext, ConnectionStatus, RequestFailedError, NotConnectedError, connect, disconnect, get_status, get_retroarch_version, \
     get_core_type, get_game_crc
 from .client import RetroArchClient, AutoRetroArchClientRegister
 
 
 EXPECTED_RETROARCH_VERSION = "1.16.0"
+
+
+class AuthStatus(enum.IntEnum):
+    NOT_AUTHENTICATED = 0
+    NEED_INFO = 1
+    PENDING = 2
+    AUTHENTICATED = 3
 
 
 class RetroArchClientCommandProcessor(ClientCommandProcessor):
@@ -34,6 +42,8 @@ class RetroArchClientCommandProcessor(ClientCommandProcessor):
 
 class RetroArchClientContext(CommonContext):
     command_processor = RetroArchClientCommandProcessor
+    auth_status: AuthStatus
+    password_requested: bool
     client_handler: Optional[RetroArchClient]
     slot_data: Optional[Dict[str, Any]] = None
     rom_crc: Optional[str] = None
@@ -44,6 +54,8 @@ class RetroArchClientContext(CommonContext):
 
     def __init__(self, server_address: Optional[str], password: Optional[str]):
         super().__init__(server_address, password)
+        self.auth_status = AuthStatus.NOT_AUTHENTICATED
+        self.password_requested = False
         self.client_handler = None
         self.retroarch_ctx = RetroArchContext()
         self.watcher_timeout = 0.5
@@ -60,10 +72,40 @@ class RetroArchClientContext(CommonContext):
     def on_package(self, cmd, args):
         if cmd == "Connected":
             self.slot_data = args.get("slot_data", None)
+            self.auth_status = AuthStatus.AUTHENTICATED
 
         if self.client_handler is not None:
             self.client_handler.on_package(self, cmd, args)
 
+    async def server_auth(self, password_requested: bool = False):
+        self.password_requested = password_requested
+
+        if self.bizhawk_ctx.connection_status != ConnectionStatus.CONNECTED:
+            logger.info("Awaiting connection to BizHawk before authenticating")
+            return
+
+        if self.client_handler is None:
+            return
+
+        # Ask handler to set auth
+        if self.auth is None:
+            self.auth_status = AuthStatus.NEED_INFO
+            await self.client_handler.set_auth(self)
+
+            # Handler didn't set auth, ask user for slot name
+            if self.auth is None:
+                await self.get_username()
+
+        if password_requested and not self.password:
+            self.auth_status = AuthStatus.NEED_INFO
+            await super(RetroArchClientContext, self).server_auth(password_requested)
+
+        await self.send_connect()
+        self.auth_status = AuthStatus.PENDING
+
+    async def disconnect(self, allow_autoreconnect: bool = False):
+        self.auth_status = AuthStatus.NOT_AUTHENTICATED
+        await super().disconnect(allow_autoreconnect)
 
 async def _game_watcher(ctx: RetroArchClientContext):
     showed_connecting_message = False
@@ -108,12 +150,13 @@ async def _game_watcher(ctx: RetroArchClientContext):
 
             rom_crc = await get_game_crc(ctx.retroarch_ctx)
             if ctx.rom_crc is not None and ctx.rom_crc != rom_crc:
-                if ctx.server is not None:
+                if ctx.server is not None and not ctx.server.socket.closed:
                     logger.info(f"ROM changed. Disconnecting from server.")
-                    await ctx.disconnect(True)
 
                 ctx.auth = None
                 ctx.username = None
+                ctx.client_handler = None
+                await ctx.disconnect(False)
             ctx.rom_crc = rom_crc
 
             if ctx.client_handler is None:
@@ -132,16 +175,17 @@ async def _game_watcher(ctx: RetroArchClientContext):
         except RequestFailedError as exc:
             logger.info(f"Lost connection to RetroArch: {exc.args[0]}")
             continue
+        except NotConnectedError:
+            continue
 
-        # Get slot name and send `Connect`
-        if ctx.server is not None and ctx.username is None:
-            await ctx.client_handler.set_auth(ctx)
+        # Server auth
+        if ctx.server is not None and not ctx.server.socket.closed:
+            if ctx.auth_status == AuthStatus.NOT_AUTHENTICATED:
+                Utils.async_start(ctx.server_auth(ctx.password_requested))
+        else:
+            ctx.auth_status = AuthStatus.NOT_AUTHENTICATED
 
-            if ctx.auth is None:
-                await ctx.get_username()
-
-            await ctx.send_connect()
-
+        # Call the handler's game watcher
         await ctx.client_handler.game_watcher(ctx)
 
 

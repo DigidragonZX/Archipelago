@@ -16,12 +16,22 @@ else:
     RetroArchClientContext = object
 
 
+def launch_client(*args) -> None:
+    from .context import launch
+    launch_subprocess(launch, name="RetroArchClient")
+
+component = Component("RetroArch Client", "RetroArchClient", component_type=Type.CLIENT, func=launch_client,
+                      file_identifier=SuffixIdentifier())
+components.append(component)
+
+
 class AutoRetroArchClientRegister(abc.ABCMeta):
     game_handlers: ClassVar[Dict[Tuple[str, ...], Dict[str, RetroArchClient]]] = {}
 
     def __new__(cls, name: str, bases: Tuple[type, ...], namespace: Dict[str, Any]) -> AutoRetroArchClientRegister:
         new_class = super().__new__(cls, name, bases, namespace)
 
+        # Register handler
         if "system" in namespace:
             systems = (namespace["system"],) if type(namespace["system"]) is str else tuple(sorted(namespace["system"]))
             if systems not in AutoRetroArchClientRegister.game_handlers:
@@ -29,6 +39,19 @@ class AutoRetroArchClientRegister(abc.ABCMeta):
 
             if "game" in namespace:
                 AutoRetroArchClientRegister.game_handlers[systems][namespace["game"]] = new_class()
+
+        # Update launcher component's suffixes
+        if "patch_suffix" in namespace:
+            if namespace["patch_suffix"] is not None:
+                existing_identifier: SuffixIdentifier = component.file_identifier
+                new_suffixes = [*existing_identifier.suffixes]
+
+                if type(namespace["patch_suffix"]) is str:
+                    new_suffixes.append(namespace["patch_suffix"])
+                else:
+                    new_suffixes.extend(namespace["patch_suffix"])
+
+                component.file_identifier = SuffixIdentifier(*new_suffixes)
 
         return new_class
 
@@ -45,10 +68,13 @@ class AutoRetroArchClientRegister(abc.ABCMeta):
 
 class RetroArchClient(abc.ABC, metaclass=AutoRetroArchClientRegister):
     system: ClassVar[Union[str, Tuple[str, ...]]]
-    """The system that the game this client is for runs on"""
+    """The system(s) that the game this client is for runs on"""
 
     game: ClassVar[str]
     """The game this client is for"""
+
+    patch_suffix: ClassVar[Optional[Union[str, Tuple[str, ...]]]]
+    """The file extension(s) this client is meant to open and patch (e.g. ".apz3")"""
 
     @abc.abstractmethod
     async def validate_rom(self, ctx: RetroArchClientContext) -> bool:
@@ -75,13 +101,3 @@ class RetroArchClient(abc.ABC, metaclass=AutoRetroArchClientRegister):
     def on_package(self, ctx: RetroArchClientContext, cmd: str, args: dict) -> None:
         """For handling packages from the server. Called from `RetroArchClientContext.on_package`."""
         pass
-
-
-def launch_client(*args) -> None:
-    from .context import launch
-    launch_subprocess(launch, name="RetroArchClient")
-
-
-if not any(component.script_name == "RetroArchClient" for component in components):
-    components.append(Component("RetroArch Client", "RetroArchClient", component_type=Type.CLIENT, func=launch_client,
-                                file_identifier=SuffixIdentifier()))

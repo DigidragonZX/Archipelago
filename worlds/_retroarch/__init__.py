@@ -14,28 +14,12 @@ from .socket import RetroArchSocket, Commands
 
 
 RETROARCH_SOCKET_PORT = 55355
-EXPECTED_SCRIPT_VERSION = 1
 
 
 class ConnectionStatus(enum.IntEnum):
     NOT_CONNECTED = 1
     TENTATIVE = 2
     CONNECTED = 3
-
-class RetroArchContext:
-    socket: typing.Optional[RetroArchSocket]
-    connection_status: ConnectionStatus
-    info: typing.Optional[typing.Dict[str, typing.Any]]
-
-    def __init__(self) -> None:
-        self.socket = None
-        self.connection_status = ConnectionStatus.NOT_CONNECTED
-        self.info = dict()
-
-    def close(self) -> None:
-        self.connection_status = ConnectionStatus.NOT_CONNECTED
-        self.info = None
-
 
 class NotConnectedError(Exception):
     """Raised when something tries to make a request before a connection has been established"""
@@ -55,6 +39,23 @@ class ConnectorError(Exception):
 class SyncError(Exception):
     """Raised when there was a mismatched response type"""
     pass
+
+
+class RetroArchContext:
+    socket: typing.Optional[RetroArchSocket]
+    connection_status: ConnectionStatus
+    info: typing.Optional[typing.Dict[str, typing.Any]]
+    _lock: asyncio.Lock
+
+    def __init__(self) -> None:
+        self.socket = None
+        self.connection_status = ConnectionStatus.NOT_CONNECTED
+        self.info = dict()
+        self._lock = asyncio.Lock()
+
+    def close(self) -> None:
+        self.connection_status = ConnectionStatus.NOT_CONNECTED
+        self.info = None
 
 
 async def connect(ctx: RetroArchContext) -> bool:
@@ -88,31 +89,32 @@ async def send_requests(ctx: RetroArchContext, req_list: typing.List[str]) -> ty
     """Sends a list of requests to the RetroArch and returns their responses.
 
     It's likely you want to use the wrapper functions instead of this."""
-    if ctx.socket is None:
-        raise NotConnectedError("You tried to send a request before a connection to RetroArch was made")
+    async with ctx._lock:
+        if ctx.socket is None:
+            raise NotConnectedError("You tried to send a request before a connection to RetroArch was made")
 
-    try:
-        responses = await ctx.socket.multi_command_transactions(req_list)
+        try:
+            responses = await ctx.socket.multi_command_transactions(req_list)
 
-        if responses == b"":
+            if responses == b"":
+                ctx.socket.close()
+                ctx.socket = None
+                ctx.close()
+                raise RequestFailedError("Connection closed")
+
+            if ctx.connection_status == ConnectionStatus.TENTATIVE:
+                ctx.connection_status = ConnectionStatus.CONNECTED
+
+            return responses
+        except ValueError as exc:
+            await ctx.socket.clear_responses()
+            raise RequestFailedError(exc.args) from exc
+        except (ConnectionError, ConnectionResetError) as exc:
             ctx.socket.close()
             ctx.socket = None
             ctx.close()
-            raise RequestFailedError("Connection closed")
-
-        if ctx.connection_status == ConnectionStatus.TENTATIVE:
-            ctx.connection_status = ConnectionStatus.CONNECTED
-
-        return responses
-    except ValueError as exc:
-        await ctx.socket.clear_responses()
-        raise RequestFailedError(exc.args) from exc
-    except (ConnectionError, ConnectionResetError) as exc:
-        ctx.socket.close()
-        ctx.socket = None
-        ctx.close()
-        ctx.connection_status = ConnectionStatus.NOT_CONNECTED
-        raise RequestFailedError("Connection reset") from exc
+            ctx.connection_status = ConnectionStatus.NOT_CONNECTED
+            raise RequestFailedError("Connection reset") from exc
 
 
 async def get_retroarch_version(ctx: RetroArchContext) -> str:
@@ -140,16 +142,7 @@ async def get_status(ctx: RetroArchContext) -> str:
 async def get_core_type(ctx: RetroArchContext) -> str:
     """Gets the core type for the currently loaded CORE"""
     if ctx.info["core_type"] is None:
-        response = await send_request(ctx, Commands.GET_STATUS)
-
-        (command, status, info) = response.split(" ", 2)
-        if command != Commands.GET_STATUS:
-            raise SyncError(f"Expected response of type {Commands.GET_STATUS} but got {command}")
-        
-        (core_type, rom_name, game_crc) = info.split(",", 2)
-        ctx.info["core_type"] = core_type
-        ctx.info["rom_name"] = rom_name
-        ctx.info["game_crc"] = game_crc
+        await send_request(ctx, Commands.GET_STATUS)
 
     return ctx.info["core_type"]
 
@@ -157,16 +150,7 @@ async def get_core_type(ctx: RetroArchContext) -> str:
 async def get_rom_name(ctx: RetroArchContext) -> str:
     """Gets the rom name for the currently loaded ROM"""
     if ctx.info["rom_name"] is None:
-        response = await send_request(ctx, Commands.GET_STATUS)
-
-        (command, status, info) = response.split(" ", 2)
-        if command != Commands.GET_STATUS:
-            raise SyncError(f"Expected response of type {Commands.GET_STATUS} but got {command}")
-        
-        (core_type, rom_name, game_crc) = info.split(",", 2)
-        ctx.info["core_type"] = core_type
-        ctx.info["rom_name"] = rom_name
-        ctx.info["game_crc"] = game_crc
+        await send_request(ctx, Commands.GET_STATUS)
 
     return ctx.info["rom_name"]
 
@@ -174,16 +158,7 @@ async def get_rom_name(ctx: RetroArchContext) -> str:
 async def get_game_crc(ctx: RetroArchContext) -> str:
     """Gets the rom name for the currently loaded ROM"""
     if ctx.info["game_crc"] is None:
-        response = await send_requests(ctx, Commands.GET_STATUS)
-
-        (command, status, info) = response.split(" ", 2)
-        if command != Commands.GET_STATUS:
-            raise SyncError(f"Expected response of type {Commands.GET_STATUS} but got {command}")
-        
-        (core_type, rom_name, game_crc) = info.split(",", 2)
-        ctx.info["core_type"] = core_type
-        ctx.info["rom_name"] = rom_name
-        ctx.info["game_crc"] = game_crc
+        await send_requests(ctx, Commands.GET_STATUS)
 
     return ctx.info["game_crc"]
 

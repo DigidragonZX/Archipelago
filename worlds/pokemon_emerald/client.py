@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional, Dict, Set
+from typing import TYPE_CHECKING, Dict, Set
 
 from NetUtils import ClientStatus
 import worlds._retroarch as retroarch
@@ -83,6 +83,7 @@ KEY_LOCATION_FLAG_MAP = {data.locations[location_name].flag: location_name for l
 
 class PokemonEmeraldClient(RetroArchClient):
     game = "Pokemon Emerald"
+    patch_suffix = ".apemerald"
     system = "game_boy_advance"
     local_checked_locations: Set[int]
     local_set_events: Dict[str, bool]
